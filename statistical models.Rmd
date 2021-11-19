@@ -1,0 +1,938 @@
+---
+title: "HarvardX PH125.4x: Data Science: Inference and Modeling"
+author: "Felipe Muniz"
+date: "17/10/2021"
+output: 
+  html_document:
+    theme: spacelab
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Section 4: Statistical models
+#### Section overview
+
+- Understand how aggregating data from different sources, as poll aggregators do for poll data, can improve the precision of a prediction.
+- Understand how to fit a multilevel model to the data to forecast, for example, election results.
+- Explain why a simple aggregation of data is insufficient to combine results because of factors such as pollster bias.
+- Use a data-driven model to account for additional types of sampling variability such as pollster-to-pollster variability.
+
+#### 16.1 Poll aggregators
+
+Monte Carlo simulation taking a set of polls results.
+
+```{r}
+library(tidyverse)
+library(dslabs)
+d <- 0.039
+Ns <- c(1298, 533, 1342, 897, 774, 254, 812, 324, 1291, 1056, 2172, 516)
+p <- (d + 1) / 2
+
+polls <- map_df(Ns, function(N) {
+  x <- sample(c(0,1), size=N, replace=TRUE, prob=c(1-p, p))
+  x_hat <- mean(x)
+  se_hat <- sqrt(x_hat * (1 - x_hat) / N)
+  list(estimate = 2 * x_hat - 1, 
+    low = 2*(x_hat - 1.96*se_hat) - 1, 
+    high = 2*(x_hat + 1.96*se_hat) - 1,
+    sample_size = N)
+}) %>% mutate(poll = seq_along(Ns))
+
+```
+#### 16.3 Exercises
+
+```{r}
+library(dslabs)
+data(heights)
+x <- heights %>% filter(sex == "Male") %>%
+  pull(height)
+```
+##### **1.** Mathematically speaking, x is our population. Using the urn analogy, we have an urn with the values of x in it. What are the average and standard deviation of our population?
+
+```{r}
+library(dslabs)
+data(heights)
+x <- heights %>% filter(sex == "Male") %>% pull(height)
+
+summary(x)
+sd(x)
+```
+##### **2.** Call the population average computed above $\mu$ and the standard deviation $\sigma$. Now take a sample of size 50, with replacement, and construct an estimate for $\mu$ and $\sigma$.
+```{r}
+mu <- mean(x)
+mu
+sig <- sd(x)
+sig
+N <- 50
+X <- sample(x, N, replace = TRUE)
+mean(X)
+sd(X)
+```
+##### **3.** What does the theory tell us about the sample average $\bar{X}$ and how it is related to $\mu$?
+a. It is practically identical to $\mu$.
+b. **It is a random variable with expected value $\mu$ and standard error $\frac{σ}{\sqrt{N}}$.**
+c. It is a random variable with expected value $\mu$ and standard error $\sigma$.
+d. Contains no information.
+ 
+##### **4.** So how is this useful? We are going to use an oversimplified yet illustrative example. Suppose we want to know the average height of our male students, but we only get to measure 50 of the 708. We will use $\bar{X}$ as our estimate. We know from the answer to exercise 3 that the standard estimate of our error $\bar{X}$-$\mu$ is $\frac{σ}{\sqrt{N}}$. We want to compute this, but we don’t know $\sigma$. Based on what is described in this section, show your estimate of $\sigma$.
+***
+##### DATACAMP Exercises 
+***
+##### **Exercise 13**
+###### The `polls` data have already been loaded for you. Use the `head` function to examine them.
+```{r}
+data(polls_us_election_2016)
+polls <- polls_us_election_2016 %>% 
+  filter(pollster %in% c("Rasmussen Reports/Pulse Opinion Research",
+                         "The Times-Picayune/Lucid") &
+           enddate >= "2016-10-15" &
+           state == "U.S.") %>% 
+  mutate(spread = rawpoll_clinton/100 - rawpoll_trump/100) 
+head(as.tibble(polls))
+```
+###### Create an object called `sigma` that contains a column for `pollster` and a column for `s`, the standard deviation of the spread
+```{r}
+sigma <- polls %>% group_by(pollster) %>%
+    summarise(s = sd(spread)) %>%
+    ungroup()
+```
+###### Print the contents of sigma to the console
+```{r}
+sigma
+```
+##### **Exercise 15** - Calculate the 95% Confidence Interval of the Spreads.
+
+###### Create an object called `res` that summarizes the average, standard deviation, and number of polls for the two pollsters.
+```{r}
+res <- polls %>% group_by(pollster) %>%
+    summarise(avg = mean(spread),
+    s = sd(spread),
+    N = n()) %>%
+    ungroup()
+```
+###### Store the difference between the larger average and the smaller in a variable called `estimate`. Print this value to the console.
+```{r}
+estimate <- abs(res$avg[1]-res$avg[2])
+estimate
+```
+###### Store the standard error of the estimates as a variable called `se_hat`. Print this value to the console.
+```{r}
+se_hat <- sqrt(res$s[2]^2/res$N[2] + res$s[1]^2/res$N[1])
+se_hat
+```
+###### Calculate the 95% confidence interval of the spreads. Save the lower and then the upper confidence interval to a variable called `ci`.
+```{r}
+Q <- qnorm(0.975)
+lower <- estimate - Q*se_hat
+upper <- estimate + Q*se_hat
+ci <- c(lower, upper)
+ci
+```
+##### **Exercise 16** - Calculate the P-value
+###### The confidence interval tells us there is relatively strong pollster effect resulting in a difference of about 5%. Random variability does not seem to explain it.
+
+###### Compute a p-value to relay the fact that chance does not explain the observed pollster effect.
+###### We made an object `res` to summarize the average, standard deviation, and number of polls for the two pollsters.
+```{r}
+res <- polls %>% group_by(pollster) %>% 
+  summarize(avg = mean(spread), s = sd(spread), N = n()) 
+```
+###### The variables `estimate` and `se_hat` contain the spread estimates and standard error, respectively.
+```{r}
+estimate <- res$avg[2] - res$avg[1]
+se_hat <- sqrt(res$s[2]^2/res$N[2] + res$s[1]^2/res$N[1])
+```
+###### Calculate the p-value
+```{r}
+2*(1-pnorm(estimate/se_hat))
+```
+##### **Exercise 17** - Comparing Within-Poll and Between-Poll Variability
+###### Execute the following lines of code to filter the polling data and calculate the spread
+```{r}
+polls <- polls_us_election_2016 %>% 
+  filter(enddate >= "2016-10-15" &
+           state == "U.S.") %>%
+  group_by(pollster) %>%
+  filter(n() >= 5) %>% 
+  mutate(spread = rawpoll_clinton/100 - rawpoll_trump/100) %>%
+  ungroup()
+```
+##### Create an object called `var` that contains columns for the pollster, mean spread, and standard deviation. Print the contents of this object to the console.
+```{r}
+var <- polls %>% group_by(pollster) %>%
+  summarize(avg = mean(spread), s = sd(spread))
+head(var)
+```
+## Section 5: Bayesian Statistics
+#### Section overview
+- Apply Bayes' theorem to calculate the probability of A given B.
+- Understand how to use hierarchical models to make better predictions by considering multiple levels of variability.
+- Compute a posterior probability using an empirical Bayesian approach.
+- Calculate a 95% credible interval from a posterior probability.
+
+***
+##### **16.7 Exercises**
+***
+
+###### **1.** In 1999, in England, Sally Clark was found guilty of the murder of two of her sons. Both infants were found dead in the morning, one in 1996 and another in 1998. In both cases, she claimed the cause of death was sudden infant death syndrome (SIDS). No evidence of physical harm was found on the two infants so the main piece of evidence against her was the testimony of Professor Sir Roy Meadow, who testified that the chances of two infants dying of SIDS was 1 in 73 million. He arrived at this figure by finding that the rate of SIDS was 1 in 8,500 and then calculating that the chance of two SIDS cases was 8,500 × 8,500 ≈ 73 million. Which of the following do you agree with?
+
+a. Sir Meadow assumed that the probability of the second son being affected by SIDS was independent of the first son being affected, thereby ignoring possible genetic causes. If genetics plays a role then:
+$\mathrm{P}(second\,case\,of\,SIDS\mid first\,case\, of\, SIDS) < \mathrm{P}(first\, case\, of\, SIDS)$
+b. Nothing. The multiplication rule always applies in this way:
+$\mathrm{P}(A \cap B) = \mathrm{P}(A)*\mathrm{P}(B)$
+c. Sir Meadow is an expert and we should trust his calculations. 
+d. Numbers don’t lie.
+
+###### **2.** Let’s assume that there is in fact a genetic component to SIDS and the probability of $\mathrm{P}(second\,case\,of\,SIDS \mid first\,case\,of\,SIDS)=1/100$, is much higher than 1 in 8,500. What is the probability of both of her sons dying of SIDS?
+
+\begin{align*}
+\mathrm{P}(1st)& = probability\,of\, developing\, SIDS = 1/8500 \\
+
+
+\mathrm{P}(2nd \mid 1st)& =\, probability\, of\, developing\, SIDS\, given\, another\, sibling\, has\, the\, condition\, = 1/100 \\
+
+
+\mathrm{P}(2nd \mid 1st)& =\frac{\mathrm{P}(2nd \cap 1st)}{\mathrm{P}(1st)} 
+\\
+\Leftrightarrow\, 
+\\
+\mathrm{P}(2nd \cap 1st)& =\mathrm{P}(2nd \mid 1st)*\mathrm{P}(1st)=\mathrm{P}(2nd \cap 1st)=\frac{1}{8500}*\frac{1}{100}=\frac{1}{850000}
+\end{align*}
+
+
+###### **3.** Many press reports stated that the expert claimed the probability of Sally Clark being innocent as 1 in 73 million. Perhaps the jury and judge also interpreted the testimony this way. This probability can be written as the probability of a mother is a son-murdering psychopath given that two of her children are found dead with no evidence of physical harm. According to Bayes’ rule, what is this?
+
+###### **4.** Assume that the chance of a son-murdering psychopath finding a way to kill her children, without leaving evidence of physical harm, is: $\mathrm{P}(A \mid B)=0.50$ with the following events:
+
+1. A = two of her children are found dead with no evidence of physical harm 
+2. B = a mother is a son-murdering psychopath = 0.50
+
+###### Assume that the rate of son-murdering psychopaths mothers is 1 in 1,000,000. According to Bayes’ theorem, what is the probability of P(B∣A)?
+
+###### **5.** After Sally Clark was found guilty, the Royal Statistical Society issued a statement saying that there was “no statistical basis” for the expert’s claim. They expressed concern at the “misuse of statistics in the courts.” Eventually, Sally Clark was acquitted in June 2003. What did the expert miss?
+
+a. He made an arithmetic error.
+b. He made two mistakes. First, he misused the multiplication rule and did not take into account how rare it is for a mother to murder her children. 
+c. After using Bayes’ rule, we found a probability closer to 0.5 than 1 in 73 million.
+d. He mixed up the numerator and denominator of Bayes’ rule.
+e. He did not use R.
+
+###### **6.** Florida is one of the most closely watched states in the U.S. election because it has many electoral votes, and the election is generally close, and Florida tends to be a swing state that can vote either way. Create the following table with the polls taken during the last two weeks:
+
+```{r}
+library(tidyverse)
+library(dslabs)
+data(polls_us_election_2016)
+polls <- polls_us_election_2016 %>% 
+  filter(state == "Florida" & enddate >= "2016-11-04" ) %>% 
+  mutate(spread = rawpoll_clinton/100 - rawpoll_trump/100)
+```
+###### Take the average spread of these polls. The CLT tells us this average is approximately normal. Calculate an average and provide an estimate of the standard error. Save your results in an object called results.
+```{r}
+results <- polls %>% 
+  summarize(avg = mean(spread), se = sd(spread)/sqrt(n()))
+
+results
+```
+###### **7.** Now assume a Bayesian model that sets the prior distribution for Florida’s election night spread d to be Normal with expected value μ and standard deviation τ. What are the interpretations of μ and τ? 
+
+a. $\mu$ and $\tau$ are arbitrary numbers that let us make probability statements about d.  
+b. $\mu$ and $\tau$ summarize what we would predict for Florida before seeing any polls. Based on past elections, we would set $\mu$ close to 0 because both Republicans and Democrats have won, and τ at about 0.02, because these elections tend to be close. 
+c. μ and τ summarize what we want to be true. We therefore set μ at 0.10 and τ at 0.01.
+d. The choice of prior has no effect on Bayesian analysis.
+
+###### **8.** The CLT tells us that our estimate of the spread $\hat{d}$ has normal distribution with expected value d and standard deviation σ calculated in problem 6. Use the formulas we showed for the posterior distribution to calculate the expected value of the posterior distribution if we set $\mu$ = 0 and $\tau$ = 0.01.
+
+```{r}
+
+
+```
+
+###### **9.** Now compute the standard deviation of the posterior distribution.
+
+###### **10.** Using the fact that the posterior distribution is normal, create an interval that has a 95% probability of occurring centered at the posterior expected value. Note that we call these credible intervals.
+
+###### **11.** According to this analysis, what was the probability that Trump wins Florida?
+
+###### **12.** Now use sapply function to change the prior variance from seq(0.05, 0.05, len = 100) and observe how the probability changes by making a plot.
+
+***
+##### DATACAMP exercises
+***
+
+##### **Exercise 6 -** Back to Election Polls
+###### Florida is one of the most closely watched states in the U.S. election because it has many electoral votes and the election is generally close. Create a table with the poll spread results from Florida taken during the last days before the election using the sample code.
+
+###### The CLT tells us that the average of these spreads is approximately normal. Calculate a spread average and provide an estimate of the standard error.
+
+```{r}
+# Load the libraries and poll data
+library(dplyr)
+library(dslabs)
+data(polls_us_election_2016)
+
+# Create an object `polls` that contains the spread of predictions for each candidate in Florida during the last polling days
+polls <- polls_us_election_2016 %>% 
+  filter(state == "Florida" & enddate >= "2016-11-04" ) %>% 
+  mutate(spread = rawpoll_clinton/100 - rawpoll_trump/100)
+
+# Examine the `polls` object using the `head` function
+head(polls)
+
+# Create an object called `results` that has two columns containing the average spread (`avg`) and the standard error (`se`). Print the results to the console.
+
+results <- polls %>%
+  summarize(avg = mean(spread), se = sd(spread)/sqrt(n()))
+
+results
+```
+##### **Exercise 7 -** The Prior Distribution
+###### Assume a Bayesian model sets the prior distribution for Florida's election night spread  to be normal with expected value  and standard deviation .
+###### What are the interpretations of $\mu$ and $\tau$?
+
+###### Possible Answers
+
+a. $\mu$ and $\tau$ are arbitrary numbers that let us make probability statements about.
+b. **$\mu$ and $\tau$ summarize what we would predict for Florida before seeing any polls.**
+c. $\mu$ and $\tau$ summarize what we want to be true. We therefore set $\mu$ at 0.10  and $\tau$ at 0.01
+d. The choice of prior has no effect on the Bayesian analysis.
+
+##### **Exercise 8 -** Estimate the Posterior Distribution
+###### The CLT tells us that our estimate of the spread $\hat{d}$ has a normal distribution with expected value d and standard deviation $\sigma$, which we calculated in a previous exercise.
+
+###### Use the formulas for the posterior distribution to calculate the expected value of the posterior distribution if we set $\mu=0$ and $\tau=0.01$.
+```{r}
+# The results` object has already been loaded. Examine the values stored: `avg` and `se` of the spread
+results
+
+# Define `mu` and `tau`
+mu <- 0
+tau <- 0.01
+
+# Define a variable called `sigma` that contains the standard error in the object `results`
+sigma <- results %>% pull(se[1])
+
+# Define a variable called `Y` that contains the average in the object `results`
+Y <- results %>% pull(avg[1])
+
+# Define a variable `B` using `sigma` and `tau`. Print this value to the console.
+B <- sigma^2/(sigma^2+tau^2)
+
+# Calculate the expected value of the posterior distribution
+mu+(1-B)*(Y-mu)
+```
+##### **Exercise 9 -** Standard Error of the Posterior Distribution
+###### Compute the standard error of the posterior distribution.
+
+```{r}
+# Here are the variables we have defined
+mu <- 0
+tau <- 0.01
+sigma <- results$se
+Y <- results$avg
+B <- sigma^2 / (sigma^2 + tau^2)
+
+# Compute the standard error of the posterior distribution. Print this value to the console.
+sqrt(1/((1/sigma^2)+(1/tau^2)))
+
+```
+
+##### **Exercise 10 -** Constructing a Credible Interval
+###### Using the fact that the posterior distribution is normal, create an interval that has a 95% of occurring centered at the posterior expected value. Note that we call these credible intervals.
+```{r}
+# Here are the variables we have defined in previous exercises
+mu <- 0
+tau <- 0.01
+sigma <- results$se
+Y <- results$avg
+B <- sigma^2 / (sigma^2 + tau^2)
+se <- sqrt( 1/ (1/sigma^2 + 1/tau^2))
+E <- mu+(1-B)*(Y-mu) # Expected value
+
+# Construct the 95% credible interval. Save the lower and then the upper confidence interval to a variable called `ci`.
+
+lower <- E-qnorm(.975)*se
+upper <- E+qnorm(.975)*se
+ci <- c(lower, upper)
+ci
+```
+##### **Exercise 11 -** Odds of Winning Florida
+###### According to this analysis, what was the probability that Trump wins Florida?
+```{r}
+# Assign the expected value of the posterior distribution to the variable `exp_value`
+exp_value <- B*mu + (1-B)*Y 
+exp_value
+# Assign the standard error of the posterior distribution to the variable `se`
+se <- sqrt( 1/ (1/sigma^2 + 1/tau^2))
+
+# Using the `pnorm` function, calculate the probability that the actual spread was less than 0 (in Trump's favor). Print this value to the console.
+pnorm(0,exp_value, se)
+```
+
+##### **Exercise 12 - ** Change the Priors
+###### We had set the prior variance  to 0.01, reflecting that these races are often close.
+###### Change the prior variance to include values ranging from 0.005 to 0.05 and observe how the probability of Trump winning Florida changes by making a plot.
+
+```{r}
+# Define the variables from previous exercises
+mu <- 0
+sigma <- results$se
+Y <- results$avg
+
+# Define a variable `taus` as different values of tau
+taus <- seq(0.005, 0.05, len = 100)
+
+# Create a function called `p_calc` that generates `B` and calculates the probability of the spread being less than 0
+p_calc <- function(tau){
+        B <- sigma^2/(sigma^2+tau^2)
+        E <- B*mu + (1-B)*Y
+        se <- sqrt( 1/ (1/sigma^2 + 1/tau^2))
+  pnorm(0, E, se)
+}
+
+# Create a vector called `ps` by applying the function `p_calc` across values in `taus`
+ps <- p_calc(taus)
+
+# Plot `taus` on the x-axis and `ps` on the y-axis
+chances_df <- data.frame(ps, taus)
+ggplot(data = chances_df, mapping = aes(x = taus, y = ps)) +
+  geom_point(colour = "blue") +
+  ylab("ps") +
+  xlab("tau") +
+  ggtitle("Chances of winning in FL - US Presidential Elections 2016", 
+          subtitle = "estimative based on a vector of values of tau")
+
+```
+
+---
+title: 'Section 6: Election forecasting'
+author: "Felipe Muniz"
+date: "05/11/2021"
+output: html_document
+---
+***
+#### Datacamp exercises
+***
+
+##### **Exercise 1 -** Confidence Intervals of Polling Data
+###### For each poll in the polling data set, use the CLT to create a 95% confidence interval for the spread. Create a new table called cis that contains columns for the lower and upper limits of the confidence intervals.
+
+```{r}
+# Load the libraries and data
+library(dplyr)
+library(dslabs)
+data("polls_us_election_2016")
+
+# Create a table called `polls` that filters by state, date, and reports the spread
+polls <- polls_us_election_2016 %>% 
+  filter(state != "U.S." & enddate >= "2016-10-31") %>% 
+  mutate(spread = rawpoll_clinton/100 - rawpoll_trump/100)
+
+# Create an object called `cis` that has the columns indicated in the instructions
+cis <- polls %>% mutate(X_hat = (spread+1)/2, 
+  se = 2*sqrt(X_hat*(1-X_hat)/samplesize), 
+  lower = spread - qnorm(0.975)*se, 
+  upper = spread + qnorm(0.975)*se) %>%
+  
+  select(state, startdate, enddate, pollster, grade, spread, lower, upper)
+
+```
+
+##### **Exercise 2 -** Compare to Actual Results
+###### You can add the final result to the cis table you just created using the left_join function as shown in the sample code. 
+###### Now determine how often the 95% confidence interval includes the actual result.
+
+```{r}
+# Add the actual results to the `cis` data set
+add <- results_us_election_2016 %>% mutate(actual_spread = clinton/100 - trump/100) %>% select(state, actual_spread)
+ci_data <- cis %>% mutate(state = as.character(state)) %>% left_join(add, by = "state")
+
+# Create an object called `p_hits` that summarizes the proportion of confidence intervals that contain the actual value. Print this object to the console.
+
+p_hits <- ci_data %>% 
+  mutate(hit = c(actual_spread >= lower & actual_spread <= upper)) %>%
+  summarize(mean(hit == TRUE))
+```
+
+##### **Exercise 3 -** Stratify by Pollster and Grade
+###### Now find the proportion of hits for each pollster. Show only pollsters with at least 5 polls and order them from best to worst. Show the number of polls conducted by each pollster and the FiveThirtyEight grade of each pollster.
+
+```{r}
+# The `cis` data have already been loaded for you
+add <- results_us_election_2016 %>% mutate(actual_spread = clinton/100 - trump/100) %>% select(state, actual_spread)
+ci_data <- cis %>% mutate(state = as.character(state)) %>% left_join(add, by = "state")
+
+# Create an object called `p_hits` that summarizes the proportion of hits for each pollster that has at least 5 polls.
+
+p_hits <- ci_data %>% 
+  mutate(hit = actual_spread >= lower & actual_spread <= upper) %>%
+  group_by(pollster) %>%
+  filter(n() >= 5) %>%
+ 
+  summarize(proportion_hits = mean(hit), n = n(), grade = grade[1]) %>%
+  arrange(desc(proportion_hits))
+```
+
+##### **Exercise 4 -** Stratify by State
+###### Repeat the previous exercise, but instead of pollster, stratify by state. Here we can't show grades.
+```{r}
+# The `cis` data have already been loaded for you
+add <- results_us_election_2016 %>% mutate(actual_spread = clinton/100 - trump/100) %>% select(state, actual_spread)
+ci_data <- cis %>% mutate(state = as.character(state)) %>% left_join(add, by = "state")
+
+# Create an object called `p_hits` that summarizes the proportion of hits for each state that has more than 5 polls.
+
+p_hits <- ci_data %>% 
+  mutate(hit = actual_spread >= lower & actual_spread <= upper) %>%
+  group_by(state) %>%
+  filter(n() > 5) %>%
+  summarize(proportion_hits = mean(hit), n = n()) %>%
+  arrange(desc(proportion_hits))
+```
+
+##### **Exercise 5 -** Plotting Prediction Results
+###### Make a barplot based on the result from the previous exercise.
+
+```{r}
+library(ggplot2)
+# The `p_hits` data have already been loaded for you. Use the `head` function to examine it.
+head(p_hits)
+
+# Make a barplot of the proportion of hits for each state
+p_hits %>% 
+  ggplot(aes(x= reorder(state, +proportion_hits), y= proportion_hits)) +
+  geom_bar(stat = "identity", width = 0.80, position = position_dodge(0.9), fill= "lightblue") +
+  ylab("Proportion of polls within the CI") +
+  xlab("State") +
+  theme(axis.text=element_text(size=7), aspect.ratio=16/9) +
+  coord_flip()
+```
+
+##### **Exercise 6 -** Predicting the Winner
+###### Even if a forecaster's confidence interval is incorrect, the overall predictions will do better if they correctly called the right winner.
+###### Add two columns to the cis table by computing, for each poll, the difference between the predicted spread and the actual spread, and define a column hit that is true if the signs are the same.
+
+```{r}
+# The `cis` data have already been loaded. Examine it using the `head` function.
+cis <- cis %>% mutate(state = as.character(state)) %>% 
+  left_join(add, by = "state")
+
+head(cis)
+# Create an object called `errors` that calculates the difference between the predicted and actual spread and indicates if the correct winner was predicted
+errors <- cis %>% mutate(error = spread - actual_spread, 
+    hit = sign(spread) == sign(actual_spread))
+
+# Examine the last 6 rows of `errors`
+tail(errors)
+```
+
+##### **Exercise 7 -** Plotting Prediction Results
+###### Create an object called p_hits that contains the proportion of instances when the sign of the actual spread matches the predicted spread for states with 5 or more polls.
+
+###### Make a barplot based on the result from the previous exercise that shows the proportion of times the sign of the spread matched the actual result for the data in p_hits.
+
+```{r}
+# Create an object called `errors` that calculates the difference between the predicted and actual spread and indicates if the correct winner was predicted
+errors <- cis %>% mutate(error = spread - actual_spread, hit = sign(spread) == sign(actual_spread))
+
+# Create an object called `p_hits` that summarizes the proportion of hits for each state that has 5 or more polls
+p_hits <- errors %>% group_by(state) %>%
+    filter(state >= 5) %>%
+    summarize(proportion_hits = mean(hit), n = n())
+
+# Make a barplot of the proportion of hits for each state
+p_hits %>% 
+  ggplot(aes(x= reorder(state,+proportion_hits), y=proportion_hits))+ 
+  geom_bar(stat = "identity", width = 0.80, 
+           position = position_dodge(0.9),fill= "lightblue")+
+  ylab("Proportion of polls within the CI") +
+  xlab("State") +
+  theme(axis.text=element_text(size=7), 
+  aspect.ratio=16/9) +
+  coord_flip()
+```
+
+##### **Exercise 8 -** Plotting the Errors
+###### In the previous graph, we see that most states' polls predicted the correct winner 100% of the time. Only a few states polls' were incorrect more than 25% of the time. Wisconsin got every single poll wrong. In Pennsylvania and Michigan, more than 90% of the polls had the signs wrong.
+
+###### Make a histogram of the errors. What is the median of these errors?
+
+```{r}
+# The `errors` data have already been loaded. Examine them using the `head` function.
+head(errors)
+
+# Generate a histogram of the error
+hist(errors$error)
+
+# Calculate the median of the errors. Print this value to the console.
+median(errors$error)
+```
+##### **Exercise 9 -** Plot Bias by State
+###### We see that, at the state level, the median error was slightly in favor of Clinton. The distribution is not centered at 0, but at 0.037. This value represents the general bias we described in an earlier section.
+
+###### Create a boxplot to examine if the bias was general to all states or if it affected some states differently. Filter the data to include only pollsters with grades B+ or higher.
+
+```{r}
+# The `errors` data have already been loaded. Examine them using the `head` function.
+head(errors)
+
+# Create a boxplot showing the errors by state for polls with grades B+ or higher
+errors %>% filter(grade %in% c("A+", "A", "A-", "B+") | is.na(grade)) %>%
+    mutate(state = reorder(state, error)) %>%
+    ggplot(aes(x = state, y = error, fill = state)) +
+    geom_boxplot()+
+    geom_point() +
+    theme(axis.text.x = element_text(size = 7, angle = 90, vjust=.5, hjust=1), legend.position = "none")
+```
+
+##### **Exercise 10 -** Filter Error Plot
+###### Some of these states only have a few polls. Repeat the previous exercise to plot the errors for each state, but only include states with five good polls or more.
+
+```{r}
+# The `errors` data have already been loaded. Examine them using the `head` function.
+head(errors)
+
+# Create a boxplot showing the errors by state for states with at least 5 polls with grades B+ or higher.
+errors %>% filter(grade %in% c("A+", "A", "A-", "B+") | is.na(grade)) %>%
+    group_by(state) %>%
+    filter(state >= 5) %>%
+    ungroup %>%
+    mutate(state = reorder(state, error)) %>%
+    ggplot(aes(x = state, y = error, fill = state)) +
+    geom_boxplot()+
+    geom_point() +
+    theme(axis.text.x = element_text(size = 7, angle = 90, vjust=.5,    hjust=1), legend.position = "none")
+```
+
+***
+##### 16.10 The t-distribution
+***
+##### **Exercise 1 -** Using the t-Distribution
+###### We know that, with a normal distribution, only 5% of values are more than 2 standard deviations away from the mean.
+
+###### Calculate the probability of seeing t-distributed random variables being more than 2 in absolute value when the degrees of freedom are 3.
+
+```{r}
+# Calculate the probability of seeing t-distributed random variables being more than 2 in absolute value when 'df = 3'.
+1-pt(2,3)+pt(-2,3)
+```
+
+##### **Exercise 2 -** Plotting the t-distribution
+###### Now use sapply to compute the same probability for degrees of freedom from 3 to 50. 
+
+###### Make a plot and notice when this probability converges to the normal distribution's 5%.
+
+```{r}
+# Generate a vector 'df' that contains a sequence of numbers from 3 to 50
+df <- c(3:50)
+
+# Make a function called 'pt_func' that calculates the probability that a value is more than |2| for any degrees of freedom 
+pt_func <- function(n) {
+
+1-pt(2,n)+pt(-2,n)
+}
+
+# Generate a vector 'probs' that uses the `pt_func` function to calculate the probabilities
+probs <- sapply(df, pt_func)
+
+# Plot 'df' on the x-axis and 'probs' on the y-axis
+plot(df, probs)
+```
+
+##### **Exercise 3 -** Sampling From the Normal Distribution
+###### In a previous section, we repeatedly took random samples of 50 heights from a distribution of heights. We noticed that about 95% of the samples had confidence intervals spanning the true population mean.
+
+###### Re-do this Monte Carlo simulation, but now instead of , use . Notice what happens to the proportion of hits.
+
+```{r}
+# Load the necessary libraries and data
+library(dslabs)
+library(dplyr)
+data(heights)
+
+# Use the sample code to generate 'x', a vector of male heights
+x <- heights %>% filter(sex == "Male") %>%
+  .$height
+
+# Create variables for the mean height 'mu', the sample size 'N', and the number of times the simulation should run 'B'
+mu <- mean(x)
+N <- 15
+B <- 10000
+se <- sd(x)/sqrt(N)
+
+# Use the `set.seed` function to make sure your answer matches the expected result after random sampling
+set.seed(1)
+
+# Generate a logical vector 'res' that contains the results of the simulations
+res <- replicate(B, {
+  X <- sample(x, N, replace = TRUE)
+  interval <- mean(X) + c(-1,1)*qnorm(0.975)*sd(X)/sqrt(N)
+  between(mu, interval[1], interval[2])
+})
+# Calculate the proportion of times the simulation produced values within the 95% confidence interval. Print this value to the console.
+mean(res)
+
+```
+
+##### **Exercise 4 -** Sampling from the t-Distribution
+###### N = 15 is not that big. We know that heights are normally distributed, so the t-distribution should apply. Repeat the previous Monte Carlo simulation using the t-distribution instead of using the normal distribution to construct the confidence intervals.
+
+###### What are the proportion of 95% confidence intervals that span the actual mean height now?
+
+```{r}
+# The vector of filtered heights 'x' has already been loaded for you. Calculate the mean.
+mu <- mean(x)
+
+# Use the same sampling parameters as in the previous exercise.
+set.seed(1)
+N <- 15
+B <- 10000
+
+# Generate a logical vector 'res' that contains the results of the simulations using the t-distribution
+res <- replicate(B, {
+  t <- sample(x, N, replace = TRUE)
+  interval <- mean(t) + c(-1,1)*qt(0.975, N-1)*sd(t)/sqrt(N)
+  between(mu, interval[1], interval[2])
+})
+
+# Calculate the proportion of times the simulation produced values within the 95% confidence interval. Print this value to the console.
+mean(res)
+
+```
+#### Section 7: Association and Chi-Squared Tests
+##### Section overview
+- Use association and chi-squared tests to perform inference on binary, categorical, and ordinal data.
+- Calculate an odds ratio to get an idea of the magnitude of an observed effect.
+
+***
+#### Datacamp exercises
+***
+##### **Exercise 1 -** Comparing Proportions of Hits
+###### In a previous exercise, we determined whether or not each poll predicted the correct winner for their state in the 2016 U.S. presidential election. Each poll was also assigned a grade by the poll aggregator. Now we're going to determine if polls rated A- made better predictions than polls rated C-.
+###### In this exercise, filter the errors data for just polls with grades A- and C-. Calculate the proportion of times each grade of poll predicted the correct winner.
+
+```{r}
+# The 'errors' data have already been loaded. Examine them using the `head` function.
+head(errors)
+
+# Generate an object called 'totals' that contains the numbers of good and bad predictions for polls rated A- and C-
+totals <- errors %>%
+    filter(grade %in% c("A-", "C-")) %>%
+    group_by(grade, hit) %>%
+    summarise(hits = n()) %>%
+    spread(grade, hits)
+head(totals)
+
+# Print the proportion of hits for grade A- polls to the console
+totals[[2,3]]/sum(totals[[3]])
+
+# Print the proportion of hits for grade C- polls to the console
+totals[[2,2]]/sum(totals[[2]])
+```
+##### **Exercise 2 -** Chi-squared Test
+###### We found that the A- polls predicted the correct winner about 80% of the time in their states and C- polls predicted the correct winner about 86% of the time.
+###### Use a chi-squared test to determine if these proportions are different.
+
+```{r}
+# The 'totals' data have already been loaded. Examine them using the `head` function.
+head(totals)
+
+# Perform a chi-squared test on the hit data. Save the results as an object called 'chisq_test'.
+chisq_test <- totals %>% select(!hit) %>% chisq.test()
+chisq_test
+
+# Print the p-value of the chi-squared test to the console
+chisq_test$p.value
+```
+##### **Exercise 3 -** Odds Ratio Calculation
+###### It doesn't look like the grade A- polls performed significantly differently than the grade C- polls in their states.
+###### Calculate the odds ratio to determine the magnitude of the difference in performance between these two grades of polls.
+
+```{r}
+# The 'totals' data have already been loaded. Examine them using the `head` function.
+head(totals)
+
+# Generate a variable called `odds_C` that contains the odds of getting the prediction right for grade C- polls
+odds_C <- with(totals, (totals[[2,2]]/sum(totals[[2]])) / (totals[[1,2]]/sum(totals[[2]])))
+
+# Generate a variable called `odds_A` that contains the odds of getting the prediction right for grade A- polls
+odds_A <- with(totals, (totals[[2,3]]/sum(totals[[3]])) / (totals[[1,3]]/sum(totals[[3]])))
+
+# Calculate the odds ratio to determine how many times larger the odds ratio is for grade A- polls than grade C- polls
+odds_A/odds_C
+```
+
+***
+##### Brexit poll analysis - Part 1
+***
+
+##### Overview
+###### In June 2016, the United Kingdom (UK) held a referendum to determine whether the country would "Remain" in the European Union (EU) or "Leave" the EU. This referendum is commonly known as Brexit. Although the media and others interpreted poll results as forecasting "Remain" (p > 0.5), the actual proportion that voted "Remain" was only 48.1%  (p > 0.481) and the UK thus voted to leave the EU. Pollsters in the UK were criticized for overestimating support for "Remain". 
+
+###### In this project, you will analyze real Brexit polling data to develop polling models to forecast Brexit results. You will write your own code in R and enter the answers on the edX platform.
+
+```{r}
+# suggested libraries and options
+library(tidyverse)
+options(digits = 3)
+
+# load brexit_polls object
+library(dslabs)
+data(brexit_polls)
+
+p <- 0.481    # official proportion voting "Remain"
+d <- 2*p-1    # official spread
+
+```
+##### **Question 2:** Actual Brexit poll estimates
+###### Load and inspect the brexit_polls dataset from dslabs, which contains actual polling data for the 6 months before the Brexit vote. Raw proportions of voters preferring "Remain", "Leave", and "Undecided" are available (remain, leave, undecided) The spread is also available (spread), which is the difference in the raw proportion of voters choosing "Remain" and the raw proportion choosing "Leave".
+
+###### Calculate x_hat for each poll, the estimate of the proportion of voters choosing "Remain" on the referendum day (), given the observed spread and the relationship . Use mutate() to add a variable x_hat to the brexit_polls object by filling in the skeleton code below:
+
+```{r}
+brexit_polls <- brexit_polls %>%
+        mutate(x_hat = (spread + 1)/2)
+# What is the average of the observed spreads (spread)?
+mean(brexit_polls$spread)
+
+# What is the standard deviation of the observed spreads?
+sd(brexit_polls$spread)
+
+# What is the average of x_hat, the estimates of the parameter p?
+mean(brexit_polls$x_hat)
+
+# What is the standard deviation of x_hat?
+sd(brexit_polls$x_hat)
+```
+
+##### **Question 3:** Confidence interval of a Brexit poll
+###### Consider the first poll in brexit_polls, a YouGov poll run on the same day as the Brexit referendum:
+
+```{r}
+brexit_polls[1,]
+
+# What is the lower bound of the 95% confidence interval?
+0.52 - qnorm(.975)*sqrt(.52*(1-.52)/4772)
+
+# What is the upper bound of the 95% confidence interval?
+0.52 + qnorm(.975)*sqrt(.52*(1-.52)/4772)
+```
+##### **Question 4:** Confidence intervals for polls in June
+###### Create the data frame june_polls containing only Brexit polls ending in June 2016 (enddate of "2016-06-01" and later). We will calculate confidence intervals for all polls and determine how many cover the true value of d
+
+```{r}
+# Create the data frame june_polls containing only Brexit polls ending in June 2016
+june_polls <- data.frame(brexit_polls %>%
+                           filter(enddate >= "2016-06-01" & enddate <= "2016-06-30") %>%
+                           mutate(se_x_hat = sqrt(x_hat * (1-x_hat)/samplesize),
+                                  se_d = 2*se_x_hat, 
+                                  lower = (2 * x_hat - 1) - qnorm(.975)*se_d,
+                                  upper = (2 * x_hat - 1) + qnorm(.975)*se_d,
+                                  hit = -0.038 >= lower & -0.038 <= upper,
+                                  zero_ci = c(lower <= 0 & upper >= 0),
+                                  above_zero = c(lower > 0)
+                                )
+                        )
+
+# How many polls are in june_polls?
+print(nrow(june_polls))
+
+# What proportion of polls have a confidence interval that covers the value 0?
+mean(june_polls$zero_ci)
+
+# What proportion of polls predict "Remain" (confidence interval entirely above 0)?
+mean(june_polls$above_zero)
+
+# What proportion of polls have a confidence interval covering the true value of d?
+mean(june_polls$hit)
+
+```
+
+##### **Question 5:** Hit rate by pollster
+
+```{r}
+# Group and summarize the june_polls object by pollster to find the proportion of 
+# hits for each pollster and the number of polls per pollster. Use arrange() to sort by hit rate.
+june_polls %>% group_by(pollster) %>%
+  summarize(proportion = mean(hit), polls = n()) %>%
+  arrange(desc(proportion))
+
+```
+
+##### **Question 6:** Boxplot of Brexit polls by poll type
+```{r}
+june_polls %>%
+  ggplot(aes(poll_type, spread, colour = poll_type))+
+  labs(title="Spread per poll types", x="Poll type", y = "Spread")+
+  geom_boxplot()+
+  geom_jitter(shape=16, position=position_jitter(0.2), colour = "black", legend.position = "none")
+```
+
+##### **Question 7:** Combined spread across poll type
+###### Calculate the confidence intervals of the spread combined across all polls in june_polls, grouping by poll type. Recall that to determine the standard error of the spread, you will need to double the standard error of the estimate.
+```{r}
+combined_by_type <- june_polls %>%
+        group_by(poll_type) %>%
+        summarize(N = sum(samplesize),
+                  spread = sum(spread*samplesize)/N,
+                  p_hat = (spread + 1)/2)
+combined_by_type %>%
+  mutate(lower = spread - qnorm(.975)*2*sqrt(p_hat*(1-p_hat)/N),
+         upper = spread + qnorm(.975)*2*sqrt(p_hat*(1-p_hat)/N),
+         ci_amplitude = abs(upper-lower),
+         hit_true_d = lower <= -0.038 & upper >= -0.038
+         )
+```
+
+##### **Question 9:** Chi-squared p-value
+###### Define brexit_hit, with the following code, which computes the confidence intervals for all Brexit polls in 2016 and then calculates whether the confidence interval covers the actual value of the spread d = -0.038:
+```{r}
+# suggested libraries
+library(tidyverse)
+
+# load brexit_polls object and add x_hat column
+library(dslabs)
+data(brexit_polls)
+brexit_polls <- brexit_polls %>%
+    mutate(x_hat = (spread + 1)/2)
+
+# final proportion voting "Remain"
+p <- 0.481
+
+brexit_hit <- brexit_polls %>%
+  mutate(p_hat = (spread + 1)/2,
+         se_spread = 2*sqrt(p_hat*(1-p_hat)/samplesize),
+         spread_lower = spread - qnorm(.975)*se_spread,
+         spread_upper = spread + qnorm(.975)*se_spread,
+         hit = spread_lower < -0.038 & spread_upper > -0.038) %>%
+  select(poll_type, hit)
+
+# Contingency table for brexit_hit
+brexit_table <- t(table(brexit_hit$poll_type, brexit_hit$hit))
+brexit_table
+# Chi-square
+chisq.test(brexit_table)
+```
+
+##### **Question 10:** Odds ratio of online and telephone poll hit rate
+###### Use the two-by-two table constructed in the previous exercise to calculate the odds ratio between the hit rate of online and telephone polls to determine the magnitude of the difference in performance between the poll types.
+
+```{r}
+# Calculate the odds that an online poll generates a confidence interval that covers the actual value of the spread.
+odds_table <- data.frame(poll_type = c("no hit", "hit"),
+                         online = c(brexit_table[1,1], brexit_table[2,1]),
+                         telephone = c(brexit_table[1,2], brexit_table[2,2])
+                          )
+odds_online <- with(odds_table, (online[2]/sum(online))/(online[1]/sum(online)))
+odds_online
+
+# Calculate the odds that a telephone poll generates a confidence interval that covers the actual value of the spread.
+odds_telephone <- with(odds_table, (telephone[2]/sum(telephone))/(telephone[1]/sum(telephone)))
+odds_telephone
+
+# Calculate the odds ratio to determine how many times larger the odds are for online polls to hit versus telephone polls.
+odds_online/odds_telephone
+
+```
